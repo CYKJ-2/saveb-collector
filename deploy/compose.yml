@@ -1,0 +1,62 @@
+x-app: &app
+  image: ${RELEASE_IMAGE:?immutable image required}
+  env_file: ${DEPLOY_ROOT}/.env
+  restart: unless-stopped
+  networks: [business]
+  stop_grace_period: 5m
+  volumes:
+    - ${DEPLOY_ROOT}/config:/app/config:ro
+
+x-worker-health: &worker-health
+  test: ["CMD-SHELL", "celery -A app.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 30s
+
+services:
+  api:
+    <<: *app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+    ports: ["127.0.0.1:${COLLECTOR_PORT:-18085}:8080"]
+    networks:
+      business:
+        aliases: [saveb-collector-api]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 10
+  worker:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q collect --concurrency=2 --loglevel=INFO
+    healthcheck: *worker-health
+  history:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q history --concurrency=1 --loglevel=INFO
+    healthcheck: *worker-health
+  maintenance:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q maintenance --concurrency=1 --loglevel=INFO
+    healthcheck: *worker-health
+  logistics:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q logistics --concurrency=1 --loglevel=INFO
+    healthcheck: *worker-health
+  beat:
+    <<: *app
+    command: celery -A app.queue.celery_app beat --schedule=/app/state/celerybeat-schedule --loglevel=INFO
+    volumes:
+      - beat:/app/state
+  migrate:
+    <<: *app
+    restart: "no"
+    profiles: [tools]
+    command: sh -c "python scripts/migrate.py && python scripts/preflight.py"
+networks:
+  business:
+    external: true
+    name: ${DEPLOY_NETWORK:-saveb-production}
+volumes:
+  beat:
+    name: saveb-collector-production-beat

@@ -1,0 +1,74 @@
+name: saveb-collector
+x-app: &app
+  build: .
+  image: saveb-collector:local
+  dns: ["${SAVEB_DNS_PRIMARY:-1.1.1.1}", "${SAVEB_DNS_SECONDARY:-8.8.8.8}"]
+  env_file: .env
+  restart: unless-stopped
+  extra_hosts: ["host.docker.internal:host-gateway"]
+  networks: [default, saveb_api]
+  depends_on:
+    redis:
+      condition: service_healthy
+  volumes:
+    - ./config:/app/config:ro
+
+services:
+  api:
+    <<: *app
+    networks:
+      default:
+      saveb_api:
+        aliases: [saveb-collector-api]
+    ports: ["127.0.0.1:8085:8080"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  worker:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q collect --concurrency=2 --loglevel=INFO
+  history:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q history --concurrency=1 --loglevel=INFO
+  maintenance:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q maintenance --concurrency=1 --loglevel=INFO
+  logistics:
+    <<: *app
+    command: celery -A app.queue.celery_app worker -Q logistics --concurrency=1 --loglevel=INFO
+  beat:
+    <<: *app
+    command: celery -A app.queue.celery_app beat --schedule=/app/state/celerybeat-schedule --loglevel=INFO
+    volumes:
+      - beat_state:/app/state
+  migrate:
+    <<: *app
+    profiles: ["tools"]
+    restart: "no"
+    command: python scripts/migrate.py
+  redis:
+    image: redis:7-alpine
+    networks:
+      default:
+        aliases: [saveb-collector-redis]
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:
+  beat_state:
+
+networks:
+  saveb_api:
+    external: true
+    name: ${SAVEB_API_NETWORK:-saveb-api_saveb-api-net}
+

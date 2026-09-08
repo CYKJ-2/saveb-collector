@@ -1,0 +1,44 @@
+# 本地账号、密钥和环境配置；仅提交无真实值的模板。
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python 环境、构建产物及下载缓存。
+.venv*/
+venv/
+build/
+dist/
+*.egg-info/
+.wheels/*
+!.wheels/.gitkeep
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# 编辑器和操作系统临时文件。
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+*.swp
+
+# 私有规则、业务快照和数据库备份不属于源码。
+config/
+outputs/
+state/
+backups/
+*.dump
+*.sql.gz
+*.tar.gz
+/deploy/image.ref
+
