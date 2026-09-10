@@ -1,6 +1,6 @@
 # saveb-collector
 
-Linux 生产自动发布和回滚见 [自动发布说明](AUTODEPLOY.md)。新的 `deploy/` 配置独立于本地 Docker 开发配置，服务器目录默认 `/home/admin_chen/www/saveb-collector`。
+服务器自动发布见 [AUTODEPLOY.md](AUTODEPLOY.md)：本地 push main → GitHub 云端测试/构建 → GHCR → 内网 runner 拉镜像部署和健康检查。首次数据迁移及固定端口见 [SERVER-DEPLOY.md](SERVER-DEPLOY.md)。真实 .env、nginx.conf 和业务数据由服务器独立维护。
 
 DH-Order 收单数据采集服务，采用 **Python 3.12 + Litestar + Celery + Redis + PostgreSQL/asyncpg**。通过账号密码自动登录，直接写入 **saveb-api 对应的数据库**，在 saveb-admin 首页监控并手动触发。
 

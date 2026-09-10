@@ -1,157 +1,118 @@
-# GitHub Actions + GHCR + Docker Compose 自动发布
+# 自动发布：GitHub 构建，内网 runner 部署
 
-## 日常只需推送代码
- 
-## 已关联的仓库与镜像
+本地验证代码后 push main，GitHub 云端测试并构建 Linux amd64 镜像，将镜像推送 GHCR；192.168.11.84 上的 runner 主动领取发布任务，只拉镜像、备份、增量迁移、更新容器及验证健康。服务器不构建应用镜像，不需要云端 SSH 到内网，也不使用服务器 SSH 私钥。
 
-| 项目 | GitHub 仓库 | GHCR 镜像 |
-|---|---|---|
-| saveb-api | `git@github.com:Ding-CYKJ/saveb-api.git` | `ghcr.io/ding-cykj/saveb-api` |
-| saveb-admin | `git@github.com:Ding-CYKJ/saveb-admin.git` | `ghcr.io/ding-cykj/saveb-admin` |
-| saveb-collector | `git@github.com:Ding-CYKJ/saveb-collector.git` | `ghcr.io/ding-cykj/saveb-collector` |
+## 已实现的流程
 
-工作流根据实际仓库名自动生成小写镜像名称，无需手填组织名。三个仓库分别配置发布 Secrets；`DEPLOY_ROOT` 分别为 `/home/admin_chen/www/saveb-api`、`/home/admin_chen/www/saveb-admin`、`/home/admin_chen/www/saveb-collector`。
+| 环节 | 实现 |
+|---|---|
+| 触发 | 各仓库 main push，或 Actions 手动运行；没有 PR 到生产 runner 的触发器 |
+| API 测试 | 云端临时 PostgreSQL、单元测试、六组独立 schema 集成回归 |
+| Admin 测试 | 根 Dockerfile 内执行 scripts/test-*.mjs 和 npm run build，再复制 dist 到 Nginx 镜像 |
+| Collector 测试 | 单元及模拟接口测试；需要真实测试库的集成用例在未配置时跳过，首次上线仍须实际验收 |
+| 镜像 | 根 Dockerfile，GHCR 标签 sha-完整提交号；部署使用不可变 sha256 digest |
+| 发布 | automation/release.sh，共享 /home/admin_chen/www/.saveb-release.lock，三个项目不会同时迁移/切换 |
+| 备份 | API/Collector 迁移前导出新业务库，检查归档、生成 SHA256；任何一步失败即停止 |
+| 健康 | Compose 等待最多 300 秒；未配置健康检查的服务仅确认运行，还须业务验收 |
+| 恢复 | 启动检查失败尝试恢复上次已记录健康的镜像和 Compose；仍将本次 Actions 标为失败 |
+| 手动回滚 | Actions 输入已成功版本的完整 SHA；跳过构建和数据库迁移 |
 
-本地把通过测试的代码推送到 main，GitHub Actions 自动构建 Linux amd64 镜像并推送 GHCR，再通过 SSH 让服务器切换版本。dev 不发布生产。部署使用镜像摘要，不使用会漂移的 latest；服务器不再需要 git pull、Node、Composer 或 Python 构建环境。
+源代码目录仍只需要根 .env、nginx.conf 等运行配置。automation/ 是发布源码，不属于运行镜像；没有重新引入 build/env 或另一套 Dockerfile。
 
-三个仓库分别发布，只更新自身服务。跨项目接口或数据库变更必须保持前后版本兼容；这不是三个仓库同时切换的事务。首次按 API → Collector → Admin 顺序部署。
+## 1. GitHub 权限和费用
 
-已提供：
-- `.github/workflows/release.yml`：main 自动构建、部署；Actions 手动回滚入口。
-- `deploy/Dockerfile`：生产镜像；不会复制本地 .env、依赖缓存或业务数据。
-- `deploy/compose.yml`：生产应用服务，仅使用 GHCR 镜像。
-- `deploy/release.sh`：发布锁、迁移前备份检查、健康检查、失败回滚、版本记录。
-- `deploy/test_release.py`：模拟 Docker 的发布/回滚故障测试。
-- `deploy/runtime.env.example`：服务器私有配置模板。
-- API 额外提供 `deploy/infra.yml` 和 `deploy/pre-migrate.example.sh`。
+各仓库 Settings → Actions → General 允许使用工作流所引用的 Actions，包括 actions/*、docker/* 和 API 的 shivammathur/setup-php。工作流声明最小权限：构建 job 为 contents:read、packages:write；发布 job 为 contents:read、packages:read。无需手动创建 GITHUB_TOKEN 或把它填入 Secrets。
 
-旧 `start-prod.sh`、`deploy-pull.sh` 和 `build/docker/*` 不是本方案的入口，不要与新生产 Compose 混用。本地现有 Docker 开发环境继续使用原命令。
+GHCR 镜像地址分别是 ghcr.io/ding-cykj/saveb-api、saveb-admin、saveb-collector。工作流通过 OCI source 标签关联仓库；如果同名 package 已存在，应在 package 的 Settings → Manage Actions access 授予对应仓库访问权。组织限制创建 package 时需由组织管理员开启相应权限。正常情况下服务器 runner 也使用本次 job 的 GITHUB_TOKEN 拉取本仓库镜像，不需要另配长期 GHCR PAT。
 
-## 服务器一次性准备
+截至 2026-09-10 的官方规则：
 
-服务器目录已按约定设为：
+- GHCR 容器镜像存储和带宽当前免费，不是超过 10 GB 就收镜像费；政策改变至少提前一个月通知。[Packages 计费](https://docs.github.com/en/billing/concepts/product-billing/github-packages)
+- 私有仓库标准云端 runner 消耗账户额度。Free/Free organization 每月 2,000 分钟，Pro/Team 每月 3,000 分钟，同账户各仓库共用。服务器 self-hosted runner 当前不收 Actions 执行费。[Actions 计费](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
+- 每仓库 Actions 缓存默认免费 10 GB，缓存额度与 GHCR 镜像不同。保留默认上限，不启用付费扩容；超出缓存上限时旧缓存被淘汰。当前工作流使用 mode=min 构建缓存，关闭 Docker build record artifact 上传，也不把 Docker 镜像打包为 Actions artifact。
+- 同一账户其他任务也消耗额度，无法只凭三个项目保证总费用为零。组织/账户 Billing & Licensing → Budgets and alerts 中为 Actions 设置符合预期的预算；若要求只用免费额度，将付费预算设为 0（按账户可用界面设置），并确认勾选 Stop usage when budget limit is reached。仅开启邮件告警不会阻止继续计费。[预算设置](https://docs.github.com/en/billing/how-tos/set-up-budgets)
 
-```text
-/home/admin_chen/www/
-├── infra/                    单独管理 PostgreSQL、两个 Redis
-├── backups/                  迁移前数据库备份
-├── saveb-api/
-│   ├── .env                  真实配置，不进 Git
-│   ├── pre-migrate.sh        服务器自行管理的备份入口
-│   ├── current               最近成功发布的完整提交号
-│   ├── previous              上一个成功版本
-│   ├── releases/提交号/       Compose、发布脚本和镜像摘要
-│   └── releases.log          发布结果记录
-├── saveb-admin/               同样保存 .env 和 releases
-└── saveb-collector/           另需 config/，以及 pre-migrate.sh
-```
+这次代码修改不会更改 GitHub 账户预算、缓存上限或付费设置。镜像大小和实际构建时长需首次云端运行后测量，不能用服务器扩容容量推算。旧镜像会逐渐积累，目前没有自动删除 GHCR 版本，避免误删回滚目标；后续清理须保留当前版本、上一健康版本及需要保留的回滚版本。旧业务数据库和附件不打包到镜像。
 
-1. 安装 Docker Engine 和 Docker Compose v2（需支持 `up --wait --wait-timeout`）、Bash、SSH、tar、flock、coreutils。部署用户为 admin_chen，需要访问 Docker 和上述目录。Docker 权限等同管理服务器，SSH 密钥应专用于这些受信任仓库。
-2. 创建目录，复制三个项目各自的 `deploy/runtime.env.example` 为对应服务器目录的 `.env`，填写真实值，并设为仅部署用户可读写（chmod 600）。不要覆盖已经填写的配置。
-3. API 的 APP_KEY 必须生成并长期保留，可使用已生成的 Laravel 密钥。数据库密码、Redis 密码、DH 账号密码以及两边一致的 Collector 令牌都放在服务器 .env。Collector 数据库 URL 中的密码须 URL 编码。
-4. API 的 DATABASE 与 Collector 连接必须指向同一个库。导入已有业务数据和附件后，先确认数据正常，再启动自动采集。新网络固定默认 `saveb-production`，模板配置已对应内部服务别名。
-5. Collector 的 `config/` 可保持为空，以数据库规则为准；使用覆盖配置文件时将路径设为容器内 `/app/config/...`。
+## 2. 一次性服务器准备
 
-创建目录示例（Linux）：
+三个项目已 clone 到 /home/admin_chen/www，在本地提交并推送本次配置后，服务器各项目 `git pull --ff-only origin main` 一次获取最新配置。保留已有 .env；旧 .env 若是链接，先保存内容为普通文件再拉取。数据迁移和固定端口见 [SERVER-DEPLOY.md](SERVER-DEPLOY.md)。
+
+服务器检查：`docker info`、`docker compose version`、`command -v bash flock python3`，以及 13000/18088/18085 端口占用。runner 用户需要能执行 Docker，沿用 admin_chen 现有权限。自动发布使用 Docker 正常的数据目录，但不得清理旧 ERP、禅道资源。
+
+API 的独立 infra 必须先准备好：
 
 ```bash
-mkdir -p /home/admin_chen/www/{infra,backups,saveb-api,saveb-admin,saveb-collector/config}
+cd /home/admin_chen/www/saveb-api
+docker compose -f docker-compose.infra.yml config --quiet
+docker compose -f docker-compose.infra.yml up -d --wait
 ```
 
-将 API 的 `deploy/infra.yml` 复制到 `/home/admin_chen/www/infra/compose.yml`，使用已填写好的 API 环境配置启动基础设施：
+这仅准备数据库/Redis/网络，不等于完成业务数据导入。首次上线必须先明确现有 RBAC 来源、准备兼容结构及迁移记录，迁入旧业务数据和真实附件。自动脚本只负责后续增量迁移，不初始化空业务库或重置管理员。迁移演练和正式切换写入窗口单独安排。
+
+## 3. 在内网注册 runner
+
+目前按仓库级 runner 配置，三个目录互相独立：
+
+| 仓库 | runner 目录 | 名称 | 自定义标签 |
+|---|---|---|---|
+| saveb-api | /home/admin_chen/www/runners/saveb-api | saveb-api-84 | saveb-production |
+| saveb-admin | /home/admin_chen/www/runners/saveb-admin | saveb-admin-84 | saveb-production |
+| saveb-collector | /home/admin_chen/www/runners/saveb-collector | saveb-collector-84 | saveb-production |
+
+每个仓库打开 Settings → Actions → Runners → New self-hosted runner，选择 Linux x64，使用页面当前下载地址和校验值。之前磁盘满导致解压不完整的目录应先核实是否已经注册/运行，补全同版本安装文件或准备独立新目录，不能盲目删除 .runner 等注册信息。不要重复启动同一注册实例。
+
+未注册的目录执行页面提供的 ./config.sh 命令并加名称与标签，以 API 为例：
 
 ```bash
-docker compose -p saveb-infra \
-  --env-file /home/admin_chen/www/saveb-api/.env \
-  -f /home/admin_chen/www/infra/compose.yml up -d --wait
+./config.sh --url https://github.com/Ding-CYKJ/saveb-api --name saveb-api-84 --labels saveb-production --work _work
 ```
 
-基础设施单独持久化，应用发布不会停止或删除它。若复用已有 PostgreSQL/Redis，需改网络与连接地址，并改备份入口；不要把新命名卷当作旧数据库。
+按提示输入该仓库页面刚生成的注册 token（短期有效，不是 GHCR API Key）。Admin/Collector 改成对应仓库和名称。saveb-production 是调度标签，不是目录；_work 是 runner 临时源码工作目录。注册后 `./run.sh` 能显示 Listening for Jobs，GitHub 中应显示 Idle。[GitHub 注册说明](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)
 
-将 API 的 `deploy/pre-migrate.example.sh` 分别复制为 API 和 Collector 服务器目录里的 `pre-migrate.sh`，chmod 700。此示例适配上述 saveb-infra，用 pg_dump 创建快照、检查归档可读性并生成 SHA-256。它不是完整恢复演练；原有定期备份恢复验证仍应单独保留。备份失败会停止发布。
-
-## GHCR 和 SSH 权限（只配置一次）
-
-GitHub 构建镜像使用自动提供的 GITHUB_TOKEN，不需把个人令牌写入工作流。
-
-服务器以部署用户身份登录 GHCR；私有镜像需要能读取三个镜像包的令牌（read:packages），只输入到服务器 Docker 凭据配置，不写进仓库：
+当前限制不修改 www 外的系统配置，所以不运行 sudo ./svc.sh install，不改 authorized_keys。确认没有另一实例运行后，可在每个 runner 目录用下面命令保持后台进程：
 
 ```bash
-docker login ghcr.io -u 你的GitHub用户名
+umask 077
+nohup ./run.sh > runner.log 2>&1 < /dev/null &
 ```
 
-若组织启用了 SSO，还需为令牌授权该组织。不要清理仍需回滚的镜像包。
+该方式能在 SSH 退出后继续运行，但**服务器重启后不会自动启动 runner**，需要再次启动并确认 Idle。若需要开机自启，须另行确定允许的服务管理方式；本次不会偷偷创建 /etc/systemd/system 下的服务。runner 离线时 GitHub 发布任务排队，不代表已经部署。
 
-给 GitHub Actions 配置专用 SSH 密钥：公钥加入服务器 admin_chen 的 authorized_keys；私钥存入 GitHub Secret。SSH 主机公钥应通过服务器控制台或已有可信连接核对指纹，生成 known_hosts 内容。工作流严格校验主机公钥，不会自动信任扫描到的新主机。
+## 4. 首次启用发布
 
-## 每个 GitHub 仓库的设置
+无需建立 GitHub Environment。免费套餐的私有仓库不支持 Environments，因此当前工作流不绑定 environment，由 main 分支条件、仓库 DEPLOY_ENABLED 开关和服务器 .deploy-ready 控制发布。仓库 Settings → Secrets and variables → Actions → Variables 设置 `DEPLOY_ENABLED=false`；这是仓库变量，不是 .env 参数。现有 Environment 中的变量/审批规则不会作用于这套未绑定 Environment 的工作流，需要人工审批时另行配置。[GitHub Environment 套餐说明](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
 
-进入 Settings → Secrets and variables → Actions。也可以将 SSH Secrets 放入名为 production 的 Environment。
+先 push，让云端测试和构建通过。部署 job 此时跳过，可先确认 GHCR package 及权限。工作流代码必须已经提交到 main；本地文件不能自行触发 GitHub。
 
-| 类型 | 名称 | 内容 |
-|---|---|---|
-| Secret | DEPLOY_HOST | Linux 服务器 IP 或 SSH 域名 |
-| Secret | DEPLOY_USER | admin_chen |
-| Secret | DEPLOY_PORT | SSH 端口，通常 22 |
-| Secret | DEPLOY_SSH_KEY | 专用 SSH 私钥全文 |
-| Secret | DEPLOY_KNOWN_HOSTS | 核对过指纹的 known_hosts 内容；非 22 端口需使用对应的端口格式 |
-| 仓库 Variable | DEPLOY_ROOT | 对应项目的 /home/admin_chen/www/saveb-api 等目录；不填时按项目名称使用此默认值 |
-| 仓库 Variable | DEPLOY_ENABLED | 完成服务器准备后设为 true；未开启时只构建推送镜像 |
-
-**DEPLOY_ENABLED 必须是仓库级 Variable**，工作流在进入 production Environment 前就会判断它。
-
-production Environment 若设置人工审批，每次部署都会等待审批；要实现 push 后全自动发布，就不设置 required reviewers，使用 main 分支保护来控制合入权限。仓库必须允许 Actions 使用 GHCR，镜像默认命名为 `ghcr.io/仓库所有者/仓库名`（转小写）。
-
-推送 main 后，Actions → Production release 中查看构建和部署结果。首次配置尚未完成时 deploy 会跳过，这不等于服务器已经部署。
-
-## 域名与访问
-
-默认只监听服务器回环地址：
-- Admin：127.0.0.1:18000
-- API：127.0.0.1:18080
-- Collector：127.0.0.1:18085
-
-服务器已有 Nginx/宝塔/其他反向代理可以将管理域名 HTTPS 转发到 127.0.0.1:18000。Admin 镜像已将 /api/ 转发到内部 API，不需要公开 Collector。API 的 APP_URL、FRONTEND_URL、CORS_ALLOWED_ORIGINS 应与实际域名对应。域名和 TLS 证书尚需在服务器配置；不建议直接把回环端口改为公网开放来替代 HTTPS。
-
-数据库、附件与运行状态保存在 Docker 命名卷中。首次服务器数据导入、附件复制和管理员账号初始化按业务迁移文档单独完成，流水线不会重置数据库或重新生成 APP_KEY。
-
-## 自动回滚和手动回滚
-
-健康检查失败后，脚本恢复最近成功版本的镜像及其 Compose，并再次检查；恢复成功也会让本次 Actions 标记失败，便于发现问题。首次发布没有成功旧版本可恢复，会保留 pending 标记并报告失败。
-
-手动回滚：
-1. Actions → Production release → Run workflow，分支选择 main。
-2. 在 rollback_sha 输入服务器曾成功部署的完整 40 位提交号。
-3. 运行工作流；回滚复用服务器保留的版本包，不重新构建，不执行数据库降级迁移。
-
-服务器也可直接执行：
+完成数据库/附件准备、生产配置核对、确认自动采集可以开始后，在服务器三个项目内分别创建就绪标记：
 
 ```bash
-# 将 COMMIT_SHA 替换为真实的完整提交号
-bash /home/admin_chen/www/saveb-api/releases/COMMIT_SHA/release.sh \
-  /home/admin_chen/www/saveb-api COMMIT_SHA rollback
+touch /home/admin_chen/www/saveb-api/.deploy-ready
+touch /home/admin_chen/www/saveb-collector/.deploy-ready
+touch /home/admin_chen/www/saveb-admin/.deploy-ready
 ```
 
-回滚范围是应用代码和 Compose。数据库数据、已发布任务、附件及服务器 .env 不会回滚。数据库迁移必须遵循向后兼容原则：先加字段/表并兼容旧代码，再在后续版本清理。删除字段、改字段含义等破坏性迁移可能让旧镜像无法启动；脚本会报告回滚失败，不能保证自动修复这种数据结构变化。
+标记只表示人工确认首次数据准备完成；不要提前创建来绕过准备步骤。发布脚本还会检查新库 users 有数据，但它无法替代完整的 RBAC、订单和附件核对。
 
-应用切换过程中可能有短暂中断，这套方案不承诺零停机。对三个仓库配套变更应先发布兼容的新 API，再发布 Collector/Admin。
+随后按 API → Collector → Admin 顺序，将对应仓库 DEPLOY_ENABLED 设为 true，在 Actions → Build and deploy production → Run workflow 选择 main，rollback_sha 留空。每个项目成功且业务验证通过后再启用下一个。初次没有历史健康版本可回滚，失败时保留 pending 并提示人工检查；不要直接删除状态文件强行继续。
 
-服务器 .env 由运维维护，旧镜像回滚仍读取当前 .env。变更配置前需另行留存配置备份，不能把“代码回滚”理解成完整环境快照恢复。
+## 5. 日常发布与回滚
 
-## 失败与恢复
+日常只需本地测试、commit、push main。看 GitHub Actions 中 test/build/deploy 的状态；只有 deploy 成功并完成业务验证才表示发布完成。新 main 已出现时旧工作流会跳过部署，避免把已过时提交发布上去。跨仓库互斥锁保证发布串行，但不是三个仓库原子升级；接口和迁移应兼容上一版本。
 
-- 构建失败：不会进入服务器部署。
-- SSH/GHCR 拉取失败：查看认证或网络，原运行版本通常不受影响。
-- 备份/迁移失败：不切换应用，保留失败记录；检查迁移是否已经部分生效，再修复重发。
-- SSH 中断留下 pending：若有 current，下次操作先恢复该版本；如果首次发布没有 current，先人工检查服务状态，再清理该项目的 pending 标记后重试。
-- 同一提交号的部署包不可覆盖；若同一 SHA 重建后摘要不同会拒绝覆盖，修正后用新提交发布。
-- 回滚版本不得是仅构建过、未健康部署过的版本。
-- 发布锁保证同一个 www 父目录下的项目串行切换；它不能代替跨项目兼容性设计。
+每次成功记录在服务器项目 current、previous、releases.log，releases/完整SHA 保存 Compose、image.ref 和 succeeded。服务器原 clone 源码不自动 git pull，运行版本以 current 和镜像 digest 为准；.env/nginx.conf/config 仍由服务器维护。基础设施变更单独维护，不能用 app 发布替代数据库配置更新。
 
-保留 releases、current、previous 和 GHCR 历史镜像。不要在发布脚本里执行 docker compose down -v、数据库重置或自动清空旧镜像。
+手动回滚：Actions → Run workflow → main → rollback_sha 填该项目曾成功发布的完整 40 位 SHA。脚本只接受服务器存在 succeeded 记录的版本，重新拉取对应 digest 并检查健康，不执行 migrate:rollback，也不恢复或覆盖业务数据。镜像被 GHCR 删除时回滚会失败，不能提前清理目标版本。相同 SHA 已记录的镜像 digest 不允许被另一次重建覆盖。只有部署失败、镜像已构建成功时，优先在原 Actions 运行中选择 Re-run failed jobs，复用原镜像输出；需要更改镜像时提交新版本。不要通过删除 releases 记录绕过一致性检查。
 
-## 验证边界
+自动恢复只恢复应用镜像与 Compose，**不能撤销数据库结构变化，也不回滚 .env 或 nginx.conf**。迁移必须兼容旧应用；有破坏性迁移应先关闭 DEPLOY_ENABLED，采用经过验证的单独发布方案。现有人工启动的版本没有 releases/succeeded 记录，不会自动成为首次发布的回滚目标。
 
-本地已使用模拟 Docker 测试发布状态和失败恢复；生产环境变量与 Compose 可以独立做 config 校验。首次 GitHub Actions 构建、私有 GHCR 拉取、真实 SSH、域名/TLS 和服务器健康检查，必须在上述一次性接入完成后验证，不能把本地测试当作线上部署已经成功。
+API/Collector 发布备份在 /home/admin_chen/www/backups/release-*；包含完整新业务库、归档目录和 SHA256。归档可读性检查不是恢复演练，也不包括附件目录；现有 Collector 备份恢复验证功能继续独立使用。脚本不自动清理备份、镜像或数据卷，定期按保留策略管理，禁止全局 docker system prune / volume prune / down -v。
 
-官方参考：[GitHub 工作流触发](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)、[Docker Compose up 与等待健康检查](https://docs.docker.com/reference/cli/docker/compose/up/)。
+## 本次验证范围
+
+发布脚本使用隔离临时目录和模拟 Docker 命令做故障回归，不连接业务库；检查 Compose 中端口、资源名及 RELEASE_IMAGE 注入。云端 Actions 权限、实际 GHCR 镜像构建、服务器 runner 注册和完整上线验收仍需在真实环境完成。工作流和脚本准备完成不代表 GitHub/服务器已启用。
+
+本地验证记录：发布故障回归 14 项通过；Admin 42 项测试及生产构建通过；API RBAC 16 项测试、107 个断言通过；Collector 32 项通过，46 项因未配置隔离集成库而跳过。验证时补回 API 已被引用但缺失的 PermissionNameSeeder，并修复 Admin 导航测试对新 external-menu 模块的加载；没有对业务库执行 Seeder。
+
+后续 API 验证：六组集成回归均通过（Workbench 有 1 项跳过）；单元测试 24 项完成，有 1 项 PHPUnit warning。还修复了首次空库采集菜单迁移缺失 system 父节点的错误，并将本地初始化测试的旧权限数量断言改为实际菜单归属和路由权限覆盖检查。以上初始化与迁移验证仅在随机 rbac_test_* schema 执行，没有重建或初始化现有业务库。

@@ -28,3 +28,20 @@ backups
 config
 *.md
 
+
+# Server-only deployment files
+.ghcr-auth-*
+incoming-*
+releases
+current
+previous
+pending
+releases.log
+pre-migrate.sh
+
+# 自动发布的服务器就绪标记与原子状态临时文件
+.deploy-ready
+.current.tmp
+.previous.tmp
+.pending.tmp
+automation

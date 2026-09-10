@@ -1,11 +1,13 @@
+name: saveb-collector-production
 x-app: &app
-  image: ${RELEASE_IMAGE:?immutable image required}
-  env_file: ${DEPLOY_ROOT}/.env
+  build: .
+  image: ${RELEASE_IMAGE:-saveb-collector:server}
+  env_file: ./.env
   restart: unless-stopped
   networks: [business]
   stop_grace_period: 5m
   volumes:
-    - ${DEPLOY_ROOT}/config:/app/config:ro
+    - ./config:/app/config:ro
 
 x-worker-health: &worker-health
   test: ["CMD-SHELL", "celery -A app.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5"]
