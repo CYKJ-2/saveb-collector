@@ -14,7 +14,7 @@
 
 API 的 docker/ 包含 PHP 容器启动、上传限制和健康检查；自动发布工具独立放在 automation/。API、Collector 本地开发继续使用各自原有 docker-compose.yml；不要把本地 Compose 与 server Compose 叠加。
 
-三个项目现在都只提供根目录 .env.example。仅在没有真实 .env 时复制模板，不覆盖现有 APP_KEY、账号密码或服务 Token。API 模板默认本地配置，服务器改为 APP_ENV=production、APP_DEBUG=false、API_PORT=18088，生产 Collector 地址使用 http://saveb-collector-api:8080。API 与 Collector 共用新业务数据库和相同服务 Token。
+三个项目现在都只提供根目录 .env.example。仅在没有真实 .env 时复制模板，不覆盖现有 APP_KEY、账号密码或服务 Token。服务器核对 APP_ENV=production、APP_DEBUG=false、API_PORT=18088，生产 Collector 地址使用 http://saveb-collector-api:8080。API 与 Collector 共用新业务数据库和相同服务 Token。
 
 保留独立项目名 saveb-api-production、saveb-admin-production、saveb-collector-production、saveb-infra，以及新网络 saveb-production，不操作旧 ERP/禅道的容器或卷。API、Admin、Collector 默认仅绑定 127.0.0.1 的 18088、13000、18085；后台内网/域名入口需要另外配置，修改 APP_URL 不会自动开放监听地址。
 
@@ -26,9 +26,66 @@ API 的 docker/ 包含 PHP 容器启动、上传限制和健康检查；自动�
 | saveb-api | `API_PORT=18088` | `127.0.0.1:18088` | `8080` |
 | saveb-collector | `COLLECTOR_PORT=18085` | `127.0.0.1:18085` | `8080` |
 
-已有服务器 `.env` 中的端口值会覆盖 Compose 默认值，更新源码后也要核对该文件。API 的 `.env.example` 仍保留本地 `API_PORT=8080`，服务器须改为上表值。容器间继续使用 `saveb-api-web:8080`、`saveb-collector-api:8080`，无需将 nginx.conf 的内部端口改成宿主机端口。上述回环地址仅服务器自身可访问；尚未配置域名/对外反向代理，不能直接在开发电脑用这些地址访问服务器。
+已有服务器 `.env` 中的端口值会覆盖 Compose 默认值，更新源码后也要核对该文件，服务器使用上表值。容器间继续使用 `saveb-api-web:8080`、`saveb-collector-api:8080`，无需将 nginx.conf 的内部端口改成宿主机端口。上述回环地址仅服务器自身可访问；尚未配置域名/对外反向代理，不能直接在开发电脑用这些地址访问服务器。
+
+### 三个 .env 的首次填写
+
+在服务器执行，已有 .env 时保留原文件，不显示其内容：
+
+```bash
+for app in saveb-api saveb-admin saveb-collector; do
+  root="/home/admin_chen/www/$app"
+  if [ ! -e "$root/.env" ] && [ ! -L "$root/.env" ]; then
+    (umask 077; cp "$root/.env.example" "$root/.env") || break
+  fi
+done
+mkdir -p /home/admin_chen/www/saveb-collector/config
+```
+
+分别使用 `nano /home/admin_chen/www/项目名/.env` 编辑。API 需核对：
+
+| 参数 | 本次服务器值 |
+|---|---|
+| APP_ENV / APP_DEBUG / APP_TIMEZONE | `production` / `false` / `Asia/Shanghai` |
+| API_PORT / DEPLOY_NETWORK | `18088` / `saveb-production` |
+| APP_URL / FRONTEND_URL / CORS_ALLOWED_ORIGINS | 暂均用 `http://127.0.0.1:13000`，通过文末 SSH 隧道验收；以后改真实入口 |
+| APP_KEY | 保留对应新系统原密钥，不能留空或随意重置 |
+| DB_CONNECTION / DB_HOST / DB_PORT | `pgsql` / `saveb-api-postgres` / `5432` |
+| DB_DATABASE / DB_USERNAME / DB_PASSWORD | `saveb` / `saveb` / 实际数据库密码；已有生产卷时以原配置为准 |
+| REDIS_HOST / REDIS_PORT / REDIS_PASSWORD | `saveb-api-redis` / `6379` / 实际 Redis 密码 |
+| CACHE_STORE / SESSION_DRIVER / QUEUE_CONNECTION | 均为 `redis` |
+| SAVEB_COLLECTOR_URL / SAVEB_COLLECTOR_ACCOUNT | `http://saveb-collector-api:8080` / `default` |
+| SAVEB_COLLECTOR_TOKEN | 至少 32 字符的随机服务 Token，与 Collector 一致 |
+| BUSINESS_ATTACHMENTS_ROOT | `/data/attachments` |
+| RBAC_SEED_ADMIN_PASSWORD | 保留现有 RBAC 时留空，不执行重置种子 |
+
+Collector 需核对：
+
+| 参数 | 本次服务器值 |
+|---|---|
+| COLLECTOR_PORT / DEPLOY_NETWORK | `18085` / `saveb-production` |
+| SAVEB_DATABASE_URL | `postgresql://saveb:实际密码@saveb-api-postgres:5432/saveb`，数据库名/用户名/密码与 API 一致 |
+| SAVEB_REDIS_URL | `redis://saveb-collector-redis:6379/0` |
+| SAVEB_CELERY_BROKER_URL | `redis://saveb-collector-redis:6379/1` |
+| SAVEB_CELERY_RESULT_BACKEND | `redis://saveb-collector-redis:6379/2` |
+| SAVEB_API_TOKEN / SAVEB_SOURCE_ACCOUNT | 与 API 的 Token 一致 / `default` |
+| SAVEB_PUBLISH_API | `true` |
+| SAVEB_DH_BASE_URL | `https://www.dh-order.com` |
+| SAVEB_DH_USERNAME / SAVEB_DH_PASSWORD | 在服务器私有 .env 填写收单账号和密码；保留原字符，不提交 Git |
+| SAVEB_DH_COOKIE | 使用账号登录时留空 |
+| SAVEB_RULES_FILE / SAVEB_RATES_FILE | 留空，从已迁入的 API 规则数据加载 |
+| SAVEB_LOGISTICS_ENABLED | 密钥未配置时为 `false` |
+| SAVEB_AFTERSHIP_API_KEY / SAVEB_KUAIDI100_API_KEY | 暂留空 |
+
+DSN 中密码含 `@`、`:`、`#`、`%` 等特殊字符时，需要 URL 编码。只对全新基础设施生成新密码，已有卷的数据库密码不会随 .env 自动改变。普通订单自动采集间隔保存在数据库中，通过 Admin 系统管理下的采集管理设置；SAVEB_PENDING_INTERVAL_MINUTES 是独立的历史 Pending 发现间隔。
+
+Admin 只需 `ADMIN_PORT=13000`、`DEPLOY_NETWORK=saveb-production`。不要给三个 .env 添加固定 RELEASE_IMAGE，镜像由工作流按 digest 注入。
+
+当前无需改 nginx.conf：API 保留 `listen 8080`、`fastcgi_pass app:9000`；Admin 保留 `listen 80` 和 `http://saveb-api-web:8080`。它们均为容器内配置，不能把这些端口改成宿主机的 18088/13000。Collector 不需要 nginx.conf。
 
 本次上线的数据库目标是：**保留新系统目标库现有 RBAC 数据，其余业务数据从旧线上系统迁移；Collector 随后写入同一个 API 业务库。** 这不是整库覆盖，也不是重新初始化权限。
+
+2026-09-10 用户已确认：要保留的 RBAC 来源为**本地 saveb-api 数据库**。首次需把这批账号、角色、权限及关联授权带到服务器目标库，并核对对应 APP_KEY；不能把服务器空库新建的默认管理员当作保留 RBAC。其余业务数据仍以旧线上系统为来源。本次部署配置不自动导出、传输或导入这些数据，数据迁移验收前保持 DEPLOY_ENABLED=false，且不创建 .deploy-ready。
 
 - 保留目标库 `users`、`roles`、`permissions`、`user_roles`、`role_permissions`、`api_tokens`、`audit_logs`；不以旧系统同名表覆盖账号、密码、菜单、角色和授权。
 - 目标库 Laravel `migrations` 记录按目标结构核对并保留，不能用旧系统的迁移记录替换；`knex_migrations` 等旧框架元数据不当作业务数据直接套用。

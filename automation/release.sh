@@ -20,10 +20,15 @@ project="$app-production"
 mkdir -p "$root/releases"
 event() { printf '%s %s %s %s\n' "$(date -u +%FT%TZ)" "$mode" "$target" "$1" >> "$root/releases.log"; }
 atomic_state() { printf '%s\n' "$2" > "$root/.$1.tmp"; mv "$root/.$1.tmp" "$root/$1"; }
+valid_image() {
+    # 固定新仓库及当前应用；按字面匹配域名，不能接受旧账号或其他项目的镜像。
+    local reference="$1" prefix="ghcr.io/cykj-2/$app@sha256:"
+    [[ "$reference" == "$prefix"* && "${reference#"$prefix"}" =~ ^[a-f0-9]{64}$ ]]
+}
 validate() {
     [[ "$1" =~ ^[a-f0-9]{40}$ ]] || return 64
     [[ -f "$root/releases/$1/compose.yml" && "$(cat "$root/releases/$1/app.id")" == "$app" ]] || return 65
-    [[ "$(cat "$root/releases/$1/image.ref")" =~ ^ghcr.io/ding-cykj/$app@sha256:[a-f0-9]{64}$ ]] || return 65
+    valid_image "$(cat "$root/releases/$1/image.ref")" || return 65
 }
 compose() {
     local revision="$1"; shift
@@ -38,7 +43,7 @@ activate() {
     compose "$1" up -d --no-build --pull never --wait --wait-timeout 300 || return
 }
 if [[ "$mode" == deploy ]]; then
-    [[ "$image" =~ ^ghcr.io/ding-cykj/$app@sha256:[a-f0-9]{64}$ ]] || exit 64
+    valid_image "$image" || exit 64
     compose_file=docker-compose.server.yml
     [[ "$app" != saveb-admin ]] || compose_file=docker-compose.yml
     source_compose="$script_dir/../$compose_file"

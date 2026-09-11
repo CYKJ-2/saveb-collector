@@ -55,7 +55,7 @@ if 'up' in args and os.environ.get('FAIL_IMAGE') in (image, 'all'):
                     "MOCK_LOG": str(self.log), "SAVEB_WWW_ROOT": str(self.www)}
 
     def image(self, sha):
-        return "ghcr.io/ding-cykj/saveb-api@sha256:" + ("1" if sha == OLD else "2") * 64
+        return "ghcr.io/cykj-2/saveb-api@sha256:" + ("1" if sha == OLD else "2") * 64
 
     def run_release(self, sha, mode="deploy", root=None, image=None):
         return subprocess.run(["bash", str(self.scripts / "release.sh"), str(root or self.root),
@@ -137,6 +137,37 @@ if 'up' in args and os.environ.get('FAIL_IMAGE') in (image, 'all'):
     def test_same_commit_cannot_change_digest(self):
         self.succeed()
         self.assertNotEqual(self.run_release(OLD, image=self.image(NEW)).returncode, 0)
+
+    def test_new_owner_for_all_apps_and_reject_foreign_images(self):
+        for app in ("saveb-api", "saveb-admin", "saveb-collector"):
+            with self.subTest(app=app):
+                root = self.www / app
+                root.mkdir(exist_ok=True)
+                (root / ".env").write_text("EXAMPLE=true\n")
+                (root / ".deploy-ready").touch()
+                (self.scripts / "app.id").write_text(app + "\n")
+                (self.checkout / "docker-compose.yml").write_text("services: {}\n")
+                image = self.image(NEW).replace("saveb-api", app)
+                for invalid in (
+                    image.replace("cykj-2", "ding-cykj"),
+                    image.replace("ghcr.io", "ghcrXio"),
+                    image.replace(app, "other-app"),
+                    image + "0",
+                ):
+                    self.log.write_text("")
+                    self.assertNotEqual(self.run_release(NEW, root=root, image=invalid).returncode, 0)
+                    self.assertEqual(self.text_log(), "")
+                result = self.run_release(NEW, root=root, image=image)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((root / "current").read_text().strip(), NEW)
+
+    def test_rollback_rejects_foreign_recorded_image_before_docker(self):
+        self.succeed()
+        image_file = self.root / "releases" / OLD / "image.ref"
+        image_file.write_text(self.image(OLD).replace("cykj-2", "other-owner"))
+        self.log.write_text("")
+        self.assertNotEqual(self.run_release(OLD, "rollback").returncode, 0)
+        self.assertEqual(self.text_log(), "")
 
     def test_only_healthy_recorded_revision_can_rollback(self):
         self.succeed()

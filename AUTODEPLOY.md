@@ -19,11 +19,31 @@
 
 源代码目录仍只需要根 .env、nginx.conf 等运行配置。automation/ 是发布源码，不属于运行镜像；没有重新引入 build/env 或另一套 Dockerfile。
 
+## 当前仓库和操作顺序
+
+| 项目 | GitHub 仓库 | GHCR 镜像 |
+|---|---|---|
+| API | [CYKJ-2/saveb-api](https://github.com/CYKJ-2/saveb-api) | `ghcr.io/cykj-2/saveb-api` |
+| Admin | [CYKJ-2/saveb-admin](https://github.com/CYKJ-2/saveb-admin) | `ghcr.io/cykj-2/saveb-admin` |
+| Collector | [CYKJ-2/saveb-collector](https://github.com/CYKJ-2/saveb-collector) | `ghcr.io/cykj-2/saveb-collector` |
+
+发布脚本现在只接受 CYKJ-2 下对应应用的镜像 digest，旧 Ding-CYKJ 镜像不能用于这次新部署。Git 拉代码的 SSH 密钥与 Actions 的 GHCR 登录相互独立。
+
+1. 三个仓库先设置仓库变量 `DEPLOY_ENABLED=false`，再提交并推送本次 `automation/`、`AUTODEPLOY.md`、`SERVER-DEPLOY.md` 修正（API 另有 CONFIGURATION.md）。检查暂存区，不要把其他尚未准备发布的业务修改顺带提交。
+2. 确认 `.github/workflows/release.yml` 已在 main；GitHub Actions 的 test/build 成功，deploy 暂时显示 Skipped 是正常情况。
+3. 服务器三个目录分别 `git pull --ff-only origin main`。按 SERVER-DEPLOY.md 填写 .env、准备基础设施和数据；拉过代码不等于完成此步骤。
+4. 在新 CYKJ-2 仓库注册三个 runner，确认均为 Idle；旧仓库的注册信息不能继续服务新仓库。
+5. 数据和配置核对通过后，按第 4 节逐个启用 API → Collector → Admin，首次通过 Run workflow 触发。之后 push main 自动发布。
+
+服务器 www 目录重新建过，也不能据此认定数据库是空的：Docker 数据卷仍可能保留。首次启动 infra 前先执行只读 `docker volume ls --filter name=saveb-production`，核实是否存在本次新系统的旧卷及其密码、数据来源，不删除这些卷来绕过配置问题。
+
 ## 1. GitHub 权限和费用
 
 各仓库 Settings → Actions → General 允许使用工作流所引用的 Actions，包括 actions/*、docker/* 和 API 的 shivammathur/setup-php。工作流声明最小权限：构建 job 为 contents:read、packages:write；发布 job 为 contents:read、packages:read。无需手动创建 GITHUB_TOKEN 或把它填入 Secrets。
 
-GHCR 镜像地址分别是 ghcr.io/ding-cykj/saveb-api、saveb-admin、saveb-collector。工作流通过 OCI source 标签关联仓库；如果同名 package 已存在，应在 package 的 Settings → Manage Actions access 授予对应仓库访问权。组织限制创建 package 时需由组织管理员开启相应权限。正常情况下服务器 runner 也使用本次 job 的 GITHUB_TOKEN 拉取本仓库镜像，不需要另配长期 GHCR PAT。
+工作流通过 OCI source 标签关联上表中的仓库；如果同名 package 已存在，应在 package 的 Settings → Manage Actions access 授予对应仓库写入权限，或确认它继承对应仓库权限。组织限制创建 package 时需由组织管理员开启相应权限。正常情况下服务器 runner 也使用本次 job 的 GITHUB_TOKEN 拉取本仓库镜像，不需要另配长期 GHCR PAT。[GHCR 身份认证和仓库关联](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+
+每个仓库打开 Settings → Secrets and variables → Actions → **Variables → New repository variable**，名称 `DEPLOY_ENABLED`，初始值 `false`。不需要创建名为 GITHUB_TOKEN 的 Secret，也不需要设置 SSH_HOST、SSH_PASSWORD 或 SSH_PRIVATE_KEY。仓库默认 Workflow permissions 可保持只读；工作流已在各 job 显式申请所需权限，如果组织策略禁止 Actions 或 package 写入，需要先调整对应策略。
 
 截至 2026-09-10 的官方规则：
 
@@ -65,10 +85,12 @@ docker compose -f docker-compose.infra.yml up -d --wait
 未注册的目录执行页面提供的 ./config.sh 命令并加名称与标签，以 API 为例：
 
 ```bash
-./config.sh --url https://github.com/Ding-CYKJ/saveb-api --name saveb-api-84 --labels saveb-production --work _work
+./config.sh --url https://github.com/CYKJ-2/saveb-api --name saveb-api-84 --labels saveb-production --work _work
 ```
 
 按提示输入该仓库页面刚生成的注册 token（短期有效，不是 GHCR API Key）。Admin/Collector 改成对应仓库和名称。saveb-production 是调度标签，不是目录；_work 是 runner 临时源码工作目录。注册后 `./run.sh` 能显示 Listening for Jobs，GitHub 中应显示 Idle。[GitHub 注册说明](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)
+
+三个新仓库的配置页面分别为 [API runners](https://github.com/CYKJ-2/saveb-api/settings/actions/runners)、[Admin runners](https://github.com/CYKJ-2/saveb-admin/settings/actions/runners)、[Collector runners](https://github.com/CYKJ-2/saveb-collector/settings/actions/runners)。下载、校验和解压命令在对应 runner 目录执行，不要在业务项目根目录执行，也不要再次 mkdir 嵌套的 actions-runner 目录。一个安装目录只注册一个实例；三个实例可以运行在同一台服务器。服务端无需公网入站端口，但必须能出站访问 GitHub Actions 服务、ghcr.io 及镜像下载地址，git clone 成功不能替代这些连接检查。
 
 当前限制不修改 www 外的系统配置，所以不运行 sudo ./svc.sh install，不改 authorized_keys。确认没有另一实例运行后，可在每个 runner 目录用下面命令保持后台进程：
 
@@ -116,3 +138,5 @@ API/Collector 发布备份在 /home/admin_chen/www/backups/release-*；包含完
 本地验证记录：发布故障回归 14 项通过；Admin 42 项测试及生产构建通过；API RBAC 16 项测试、107 个断言通过；Collector 32 项通过，46 项因未配置隔离集成库而跳过。验证时补回 API 已被引用但缺失的 PermissionNameSeeder，并修复 Admin 导航测试对新 external-menu 模块的加载；没有对业务库执行 Seeder。
 
 后续 API 验证：六组集成回归均通过（Workbench 有 1 项跳过）；单元测试 24 项完成，有 1 项 PHPUnit warning。还修复了首次空库采集菜单迁移缺失 system 父节点的错误，并将本地初始化测试的旧权限数量断言改为实际菜单归属和路由权限覆盖检查。以上初始化与迁移验证仅在随机 rbac_test_* schema 执行，没有重建或初始化现有业务库。
+
+CYKJ-2 迁移补充验证：发布回归增加三个应用的新账号镜像成功部署、拒绝旧账号/错误域名/错误应用/无效 digest，以及拒绝篡改后的回滚镜像；共 16 项用例。真实 GitHub 权限、云端构建和服务器上线结果以各自 Actions 日志为准。
