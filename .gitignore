@@ -32,8 +32,9 @@ Thumbs.db
 *.bak
 *.swp
 
-# 私有规则、业务快照和数据库备份不属于源码。
-config/
+# 只忽略根目录私有规则；app/config/ 是配置读取源码，必须提交。
+/config/
+# 私有业务快照和数据库备份不属于源码。
 outputs/
 state/
 backups/

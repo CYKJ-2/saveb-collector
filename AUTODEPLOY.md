@@ -133,6 +133,10 @@ API/Collector 发布备份在 /home/admin_chen/www/backups/release-*；包含完
 
 ## 本次验证范围
 
+2026-09-11 修复 `ModuleNotFoundError: No module named 'app.config'`：Git 忽略规则 `config/` 错误覆盖了源码目录 `app/config/`，导致本地可运行、GitHub 缺文件。规则已改为只排除根目录 `/config/`，配置模块的 `__init__.py` 和 `settings.py` 必须提交；它们只包含读取逻辑及默认值，不包含真实账号和密钥。Docker 构建增加配置模块导入检查，真实 .env 和根目录私有规则继续排除。
+
+修复验证使用 Git 暂存树导出的纯源码快照，在 Python 3.12 Linux 容器中执行，未挂载本机 .env：模块导入成功，pytest 32 项通过、46 项因缺少独立集成库按设计跳过，发布回归 16 项通过。依赖使用本地已有镜像及离线测试包；完整云端安装依赖和镜像推送仍需新提交的 Actions 验证。
+
 发布脚本使用隔离临时目录和模拟 Docker 命令做故障回归，不连接业务库；检查 Compose 中端口、资源名及 RELEASE_IMAGE 注入。云端 Actions 权限、实际 GHCR 镜像构建、服务器 runner 注册和完整上线验收仍需在真实环境完成。工作流和脚本准备完成不代表 GitHub/服务器已启用。
 
 本地验证记录：发布故障回归 14 项通过；Admin 42 项测试及生产构建通过；API RBAC 16 项测试、107 个断言通过；Collector 32 项通过，46 项因未配置隔离集成库而跳过。验证时补回 API 已被引用但缺失的 PermissionNameSeeder，并修复 Admin 导航测试对新 external-menu 模块的加载；没有对业务库执行 Seeder。

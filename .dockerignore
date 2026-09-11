@@ -25,7 +25,8 @@ htmlcov
 tests
 outputs
 backups
-config
+# 根目录是运行时私有规则，app/config/ 属于运行源码。
+/config/
 *.md
 
 

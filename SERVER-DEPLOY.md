@@ -30,6 +30,10 @@ API 的 docker/ 包含 PHP 容器启动、上传限制和健康检查；自动�
 
 ### 三个 .env 的首次填写
 
+模板已统一为 Linux 生产示例，使用 UTF-8（无 BOM）编码；本地 .env 与模板字段一致，但各机器的值独立维护。服务器通常只需填写 API 的 APP_KEY、数据库密码、Redis 密码、共享 Token，以及 Collector 的同库 DSN、相同 Token、收单账号和密码，再核对实际访问入口。其他字段按模板中文说明保留默认值。Admin 没有业务密码，仅配置端口和网络。
+
+旧文件中没有的新字段按模板补齐；已有 .env 不要直接覆盖。APP_TIMEZONE 不是当前 API 的有效配置，Laravel 时区仍由 config/app.php 决定。普通采集间隔在采集管理页面设置，不要添加已停用的 SAVEB_COLLECT_INTERVAL_MINUTES。
+
 在服务器执行，已有 .env 时保留原文件，不显示其内容：
 
 ```bash
@@ -46,7 +50,7 @@ mkdir -p /home/admin_chen/www/saveb-collector/config
 
 | 参数 | 本次服务器值 |
 |---|---|
-| APP_ENV / APP_DEBUG / APP_TIMEZONE | `production` / `false` / `Asia/Shanghai` |
+| APP_ENV / APP_DEBUG | `production` / `false` |
 | API_PORT / DEPLOY_NETWORK | `18088` / `saveb-production` |
 | APP_URL / FRONTEND_URL / CORS_ALLOWED_ORIGINS | 暂均用 `http://127.0.0.1:13000`，通过文末 SSH 隧道验收；以后改真实入口 |
 | APP_KEY | 保留对应新系统原密钥，不能留空或随意重置 |

@@ -74,7 +74,11 @@ docker compose logs --tail 100 api worker history maintenance beat
 
 ## 配置要点
 
-模板见 [.env.example](.env.example)。真实密码、Cookie 和令牌仅保存在被 Git 忽略的 `.env`，不要提交。
+模板见 [.env.example](.env.example)，默认提供 Linux 服务器值，逐组标明必填项、本地差异和中文说明。本地 `.env` 与模板字段一致，各自维护不同值；真实密码、Cookie 和令牌仅保存在被 Git 忽略的 `.env`，不要提交。文件使用 UTF-8（无 BOM）；编辑器编码规则见 `.editorconfig`。
+
+已移除无效的 `SAVEB_COLLECT_INTERVAL_MINUTES`、`SAVEB_DH_LOGIN_URL` 和 `SAVEB_LOG_LEVEL`：普通采集间隔在采集管理页面设置，登录地址由收单适配器确定，Celery 日志级别由启动命令的 `--loglevel` 设置。`SAVEB_PENDING_INTERVAL_MINUTES` 只控制独立的 Pending 发现任务。
+
+整理前的本机私有配置保存在 `.env.backup-时间戳`，该文件不提交 Git、不进入镜像。原有账号、密码、Token、连接地址保持不变，新增字段沿用原有运行默认值；生产模板中物流默认关闭，配置供应商密钥后再开启。
 
 - `SAVEB_DATABASE_URL` 必须指向 API 实际数据库，不能仅凭数据库名称判断其是否为测试库。
 - `SAVEB_PUBLISH_API=true` 才发布业务表；false 是影子采集。
