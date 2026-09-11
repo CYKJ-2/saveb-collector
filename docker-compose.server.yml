@@ -1,7 +1,7 @@
 name: saveb-collector-production
 x-app: &app
-  build: .
-  image: ${RELEASE_IMAGE:-saveb-collector:server}
+  # 服务器只运行云端构建的镜像，缺少版本时直接报错。
+  image: ${RELEASE_IMAGE:?Set RELEASE_IMAGE to the pulled GHCR image}
   env_file: ./.env
   restart: unless-stopped
   networks: [business]

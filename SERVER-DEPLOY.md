@@ -4,6 +4,14 @@
 
 2026-09-10 已根据用户提供的 df/lvs 确认服务器扩容成功：根文件系统约 588 GB，可用约 507 GB。代码配置已准备不等于服务器已经部署成功；首次镜像构建、数据库迁移及访问入口仍需实际验证。
 
+## 生产镜像与内网访问（2026-09-11 更新）
+
+生产 Compose 只接受显式 RELEASE_IMAGE，不包含 build；先确保当前提交的 GitHub Actions build 成功，再在该项目目录 export RELEASE_IMAGE 为对应 ghcr.io/cykj-2/项目名:sha-完整提交号，docker pull 成功后启动。每次切换项目都重新设置 RELEASE_IMAGE，不能把 API 镜像用于 Collector 或 Admin。操作步骤见 API 仓库的 [应用启动说明](../saveb-api/APPLICATION-START.md)。
+
+Admin 的 .env 设置 ADMIN_BIND_IP=192.168.11.84、ADMIN_PORT=13000，浏览器通过 http://192.168.11.84:13000/dashboard/overview 访问。API 的 APP_URL、FRONTEND_URL、CORS_ALLOWED_ORIGINS 使用同一入口。Admin Nginx 仍监听容器内 80，并代理 /api 到 saveb-api-web:8080；API/Collector 无需向浏览器开放宿主机端口。未设置 ADMIN_BIND_IP 时默认回环监听。
+
+Collector 初次空业务库只有结构时，先运行 python scripts/migrate.py 并启动 api 服务即可。站点规则上下文、汇率和来源账号准备好后，python scripts/preflight.py 通过，再启动 worker/history/maintenance/logistics/beat。/ready 健康仅表示 Collector 表版本可用，不代表规则、来源登录或采集任务已经验收。
+
 ## 文件与配置
 
 | 项目 | 构建文件 | 服务器 Compose | 需要维护的配置 |
