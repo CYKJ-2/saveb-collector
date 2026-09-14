@@ -1,5 +1,7 @@
 # saveb-collector
 
+部署复盘和日常命令统一入口：[部署与数据迁移操作手册](../saveb-api/部署与数据迁移操作手册.md)。已上线的采集服务更新使用手册第 4.4 节，先迁移再启动新版 worker/Beat。
+
 服务器构建支持旧版 Docker builder：Dockerfile 使用多阶段 COPY，不依赖 `RUN --mount` 或 buildx。`.wheels` 仅作为构建阶段的可选离线依赖来源，运行镜像只保留安装后的包。
 
 当前服务器部署采用 **本地 push → 服务器 git pull → 服务器构建镜像并启动 Docker Compose**，无需 GHCR 或 runner。完整命令见 [服务器启动说明](../saveb-api/APPLICATION-START.md)；自动发布文档留作后续启用时参考。
