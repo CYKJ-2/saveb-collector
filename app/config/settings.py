@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     max_attempts: int = Field(3, ge=1, le=10)
     history_start: str = "2021-08-10"
     pending_enabled: bool = True
+    # 自动 Pending 发现只循环最近 N 个自然日（含今天），不影响手动范围采集。
+    pending_lookback_days: int = Field(30, ge=1, le=366)
     pending_interval_minutes: int = Field(30, ge=5, le=1440)
     pending_window_days: int = Field(7, ge=1, le=31)
     pending_max_pages: int = Field(10, ge=1, le=200)

@@ -8,6 +8,7 @@ from app.config.settings import get_settings
 from app.domain.orders import digest, normalize, timestamp
 from app.persistence.orders import upsert
 from app.persistence.projections import rebuild
+from app.services.pending import automatic_pending_outdated, pending_bounds
 
 
 # 所有分片结束后汇总任务状态；成功时间取任务完成时间，不要求来源订单更新时间变化。
@@ -72,6 +73,13 @@ async def run_chunk(conn, job_id, client_factory=DHOrderClient):
         job = await conn.fetchrow("SELECT * FROM collector.jobs WHERE id=$1", job_id)
         if job["status"] in ("succeeded", "failed", "partial_failed", "cancelled"):
             return
+        if automatic_pending_outdated(job):
+            # 不依赖 Beat 先运行：升级后已在 Redis 排队的旧范围也不能继续抓取。
+            await conn.execute(
+                "UPDATE collector.jobs SET cancel_requested=true,error='PENDING_WINDOW_EXPIRED' WHERE id=$1",
+                job_id,
+            )
+            job = dict(job, cancel_requested=True)
         if job["context"].get("date_policy") != "source-create-time-v2":
             # Resume pre-upgrade jobs with the new date policy; retain their frozen rules/rates.
             job = dict(job)
@@ -137,6 +145,11 @@ async def run_chunk(conn, job_id, client_factory=DHOrderClient):
             selected = list(zip(normalized, rows))
             if job["mode"] == "pending":
                 selected = [(n, raw) for n, raw in selected if n["columns"]["order_status"] == "pending"]
+                if job["actor"] == "pending-scheduler":
+                    # 来源接口保留日期 padding，超出滚动窗口的返回值不发布到业务表。
+                    lower, today = pending_bounds()
+                    selected = [(n, raw) for n, raw in selected
+                                if lower.isoformat() <= n["day"] <= today.isoformat()]
             if job["mode"] == "today":
                 # 手动按钮只发布本任务北京时间当天的订单；历史纠正由定时与回填任务处理。
                 selected = [(n, raw) for n, raw in selected if n["day"] == chunk["scope"]["day"]]
@@ -153,10 +166,16 @@ async def run_chunk(conn, job_id, client_factory=DHOrderClient):
                 cancelled = await conn.fetchval(
                     "SELECT cancel_requested FROM collector.jobs WHERE id=$1 FOR UPDATE", job_id
                 )
-                if cancelled:
+                if cancelled or automatic_pending_outdated(job):
+                    # 在途请求跨午夜过期或被调度器取消时，整项停止，不提交过期响应。
                     await conn.execute(
-                        "UPDATE collector.chunks SET status='cancelled' WHERE id=$1", chunk["id"]
+                        "UPDATE collector.jobs SET cancel_requested=true WHERE id=$1", job_id
                     )
+                    await conn.execute(
+                        "UPDATE collector.chunks SET status='cancelled' WHERE job_id=$1 AND status IN ('queued','running')",
+                        job_id,
+                    )
+                    await finalize(conn, dict(job, cancel_requested=True))
                     return
                 days = set()
                 if job["params"]["dry_run"]:
