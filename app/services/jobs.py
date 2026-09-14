@@ -39,8 +39,14 @@ async def submit(conn, request: JobRequest, actor: str, key: str):
     account = settings.source_account
     today = datetime.now(SHANGHAI).date()
     params = request.model_dump(mode="json")
+    start = request.start or today - timedelta(days=request.lookback_days - 1)
+    end = request.end or today
     if request.mode == "today":
-        params.update(start=today.isoformat(), end=today.isoformat())
+        start = end = today
+    if end > today:
+        raise ValueError("end cannot be in the future")
+    # 固化实际日期，避免跨午夜复用昨天的自动任务，也让管理页显示真实范围。
+    params.update(start=start.isoformat(), end=end.isoformat())
     fingerprint = digest(params)
     async with conn.transaction():
         # Serialize job planning, independent of the long-running source fetch lock.
@@ -66,12 +72,6 @@ async def submit(conn, request: JobRequest, actor: str, key: str):
         )
         if active:
             return await status(conn, active)
-        start = request.start or today - timedelta(days=request.lookback_days - 1)
-        end = request.end or today
-        if request.mode == "today":
-            start = end = today
-        if end > today:
-            raise ValueError("end cannot be in the future")
         scopes = [
             {"day": (start + timedelta(days=i)).isoformat()} for i in range((end - start).days + 1)
         ]
@@ -95,22 +95,35 @@ async def submit(conn, request: JobRequest, actor: str, key: str):
                 )
             }
             scopes = [s for s in scopes if s["day"] not in covered]
-        # 防漏由近期日期重采、已知未完成单号复查、滚动历史日三部分组成。
+        # 即时任务只保留日期分片，优先今天；耗时历史复查另投 history 队列。
         if request.mode == "refresh":
+            scopes.reverse()
+        background_scopes = []
+        background_id = None
+        if request.mode == "refresh":
+            background_id = await conn.fetchval(
+                "SELECT id FROM collector.jobs WHERE account=$1 "
+                "AND params->>'task_kind'='open_recheck' "
+                "AND (params->>'dry_run')::boolean=$2 "
+                "AND (context->>'publish_api')::boolean=$3 "
+                "AND status IN ('queued','running','retrying') ORDER BY created_at LIMIT 1",
+                account, request.dry_run, settings.publish_api and not request.dry_run,
+            )
+        if request.mode == "refresh" and not background_id:
             if request.include_open_orders:
                 opened = await conn.fetch(
                     "SELECT order_id FROM collector.source_orders WHERE account=$1 AND normalized->'columns'->>'order_status' = ANY($2::text[])",
                     account,
                     ["pending", "reversed", "failed", "expired"],
                 )
-                scopes += [{"order_id": r["order_id"]} for r in opened]
+                background_scopes += [{"order_id": r["order_id"]} for r in opened]
                 # Bootstrap from existing ERP open orders before source_orders has been seeded.
                 if await conn.fetchval("SELECT to_regclass('public.orders')"):
                     inherited = await conn.fetch(
                         "SELECT order_id FROM orders WHERE deleted_at IS NULL AND lower(order_status)=ANY($1::text[])",
                         ["pending", "reversed", "failed", "expired"],
                     )
-                    scopes += [{"order_id": r["order_id"]} for r in inherited]
+                    background_scopes += [{"order_id": r["order_id"]} for r in inherited]
             history_start = date.fromisoformat(settings.history_start)
             cursor = (
                 await conn.fetchval(
@@ -121,7 +134,7 @@ async def submit(conn, request: JobRequest, actor: str, key: str):
             if cursor >= start:
                 cursor = history_start
             if cursor < start:
-                scopes.append({"day": cursor.isoformat(), "rolling": True})
+                background_scopes.append({"day": cursor.isoformat(), "rolling": True})
         context = await load_context(conn)
         context["publish_api"] = settings.publish_api and not request.dry_run
         # Freeze publication mode/context so a configuration change cannot alter an old job.
@@ -140,6 +153,26 @@ async def submit(conn, request: JobRequest, actor: str, key: str):
             if any(scope["day"] not in archived for scope in scopes):
                 raise ValueError("RAW_DATE_RANGE_NOT_ARCHIVED")
         job_id = str(uuid4())
+        if background_scopes:
+            background_id = str(uuid4())
+            background_params = {
+                **params, "mode": "history", "task_kind": "open_recheck",
+                "parent_job_id": job_id, "start": None, "end": None,
+            }
+            await conn.execute(
+                "INSERT INTO collector.jobs(id,account,mode,actor,idempotency_key,request_hash,params,context) "
+                "VALUES($1,$2,'history',$3,$4,$5,$6,$7)",
+                background_id, account, actor, "background:" + job_id,
+                digest(background_params), background_params, context,
+            )
+            await conn.execute(
+                "INSERT INTO collector.chunks(job_id,scope) SELECT $1,value "
+                "FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS s(value,n) "
+                "ORDER BY n ON CONFLICT DO NOTHING", background_id, background_scopes,
+            )
+            await conn.execute("INSERT INTO collector.outbox(job_id) VALUES($1)", background_id)
+        if background_id:
+            params["background_job_id"] = background_id
         await conn.execute(
             "INSERT INTO collector.jobs(id,account,mode,actor,idempotency_key,request_hash,params,context) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
             job_id,

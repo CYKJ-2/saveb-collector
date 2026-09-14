@@ -21,13 +21,13 @@ async def test_changed_interval_and_duplicate_ticks_are_atomic(db):
     before = await db.fetchval("SELECT clock_timestamp()")
     results = await asyncio.gather(check_schedule(), check_schedule())
     assert sum(result is not None for result in results) == 1
-    assert await db.fetchval("SELECT count(*) FROM collector.jobs") == 1
+    assert await db.fetchval("SELECT count(*) FROM collector.jobs WHERE mode='refresh'") == 1
     due = await db.fetchval("SELECT next_run_at FROM collector.schedules")
     assert before + timedelta(minutes=75) <= due < before + timedelta(minutes=76)
     # An unfinished automatic refresh is reused rather than queued repeatedly.
     await db.execute("UPDATE collector.schedules SET next_run_at=now()-interval '1 minute'")
     assert await check_schedule() is None
-    assert await db.fetchval("SELECT count(*) FROM collector.jobs") == 1
+    assert await db.fetchval("SELECT count(*) FROM collector.jobs WHERE mode='refresh'") == 1
 
 
 @pytest.mark.asyncio

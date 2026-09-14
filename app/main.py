@@ -42,7 +42,7 @@ async def ready() -> Response:
     try:
         async with connect() as conn:
             version = await conn.fetchval("SELECT max(version) FROM collector.schema_versions")
-            if version != 5:
+            if version != 6:
                 raise ValueError()
     except Exception:  # noqa: BLE001 - readiness must return a bounded error without DB details
         return response({"status": "dependency_unavailable"}, 503)

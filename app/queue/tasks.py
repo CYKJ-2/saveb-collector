@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from app.config.settings import get_settings
 from app.domain.jobs import JobRequest
+from app.domain.orders import SHANGHAI
 from app.persistence.db import connect
 from app.queue.celery_app import celery_app
 from app.services.collection import run_chunk
@@ -80,8 +81,9 @@ async def check_schedule():
                     # A slow scheduled job must not create an ever-growing automatic backlog.
                     active = await conn.fetchval(
                         "SELECT id FROM collector.jobs WHERE account=$1 AND actor='scheduler' "
-                        "AND mode='refresh' AND status IN ('queued','running','retrying') LIMIT 1",
-                        account,
+                        "AND mode='refresh' AND status IN ('queued','running','retrying') "
+                        "AND params->>'end'=$2 LIMIT 1",
+                        account, now.astimezone(SHANGHAI).date().isoformat(),
                     )
                     if not active:
                         job = await submit(
