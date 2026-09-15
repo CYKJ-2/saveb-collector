@@ -1,7 +1,6 @@
-# 本地账号、密钥和环境配置；仅提交无真实值的模板。
+# 环境备份默认忽略；内部仓库的实际环境配置在文件末尾显式放行。
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 
@@ -59,3 +58,18 @@ backups/
 .current.tmp
 .previous.tmp
 .pending.tmp
+
+# Runtime state and environment backups
+.env
+.env.*
+.runtime/
+.deploy-environment
+
+# 用户指定：内部仓库提交实际环境和 Nginx 配置，不提交环境备份。
+!.env
+!.env.local
+!.env.test
+!.env.production
+!.env.development.local
+!nginx.conf
+!deploy/nginx/*.conf

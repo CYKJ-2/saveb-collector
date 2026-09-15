@@ -1,14 +1,12 @@
 # saveb-collector
 
-部署复盘和日常命令统一入口：[部署与数据迁移操作手册](../saveb-api/部署与数据迁移操作手册.md)。已上线的采集服务更新使用手册第 4.4 节，先迁移再启动新版 worker/Beat。
+当前统一启动：`bash start.sh`；首次可选 `local` / `test` / `production`，以后无需手工重启容器。完整配置见 [三项目部署说明](../saveb-api-go/DEPLOYMENT.md)。运行不依赖 PHP 项目。
 
 服务器构建支持旧版 Docker builder：Dockerfile 使用多阶段 COPY，不依赖 `RUN --mount` 或 buildx。`.wheels` 仅作为构建阶段的可选离线依赖来源，运行镜像只保留安装后的包。
 
-当前服务器部署采用 **本地 push → 服务器 git pull → 服务器构建镜像并启动 Docker Compose**，无需 GHCR 或 runner。完整命令见 [服务器启动说明](../saveb-api/APPLICATION-START.md)；自动发布文档留作后续启用时参考。
 
-服务器自动发布见 [AUTODEPLOY.md](AUTODEPLOY.md)：本地 push main → GitHub 云端测试/构建 → GHCR → 内网 runner 拉镜像部署和健康检查。首次数据迁移及固定端口见 [SERVER-DEPLOY.md](SERVER-DEPLOY.md)。真实 .env、nginx.conf 和业务数据由服务器独立维护。
 
-DH-Order 收单数据采集服务，采用 **Python 3.12 + Litestar + Celery + Redis + PostgreSQL/asyncpg**。通过账号密码自动登录，直接写入 **saveb-api 对应的数据库**，在 saveb-admin 首页监控并手动触发。
+DH-Order 收单数据采集服务，采用 **Python 3.12 + Litestar + Celery + Redis + PostgreSQL/asyncpg**。通过账号密码自动登录，直接写入 **saveb-api-go 共用的业务数据库**，在 saveb-admin 首页监控并手动触发。
 
 完整部署和维护说明见 **[项目说明文档](项目说明文档.md)**；跨项目接口与权限见 [API 接入说明](../saveb-api/COLLECTOR-INTEGRATION.md)。
 
@@ -82,11 +80,11 @@ docker compose logs --tail 100 api worker history maintenance beat
 
 ## 配置要点
 
-模板见 [.env.example](.env.example)，默认提供 Linux 服务器值，逐组标明必填项、本地差异和中文说明。本地 `.env` 与模板字段一致，各自维护不同值；真实密码、Cookie 和令牌仅保存在被 Git 忽略的 `.env`，不要提交。文件使用 UTF-8（无 BOM）；编辑器编码规则见 `.editorconfig`。
+环境配置直接维护在 `.env.local`、`.env.test`、`.env.production`，随内部仓库提交；start.sh 按所选环境读取，不需要 .example 文件。测试/生产的占位符须填成实际值后才能启动。文件使用 UTF-8（无 BOM）。
 
 已移除无效的 `SAVEB_COLLECT_INTERVAL_MINUTES`、`SAVEB_DH_LOGIN_URL` 和 `SAVEB_LOG_LEVEL`：普通采集间隔在采集管理页面设置，登录地址由收单适配器确定，Celery 日志级别由启动命令的 `--loglevel` 设置。`SAVEB_PENDING_INTERVAL_MINUTES` 只控制独立的 Pending 发现任务。
 
-整理前的本机私有配置保存在 `.env.backup-时间戳`，该文件不提交 Git、不进入镜像。原有账号、密码、Token、连接地址保持不变，新增字段沿用原有运行默认值；生产模板中物流默认关闭，配置供应商密钥后再开启。
+整理前的本机私有配置保存在 `.env.backup-时间戳`，该文件不提交 Git、不进入镜像。原有账号、密码、Token、连接地址保持不变，新增字段沿用原有运行默认值；生产配置中物流默认关闭，配置供应商密钥后再开启。
 
 - `SAVEB_DATABASE_URL` 必须指向 API 实际数据库，不能仅凭数据库名称判断其是否为测试库。
 - `SAVEB_PUBLISH_API=true` 才发布业务表；false 是影子采集。
